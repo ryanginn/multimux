@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MultiMux</title>
+<style>
+:root{--bg:#0f1216;--panel:#171b21;--panel2:#1e242c;--line:#2a313b;--text:#e6e9ee;--dim:#8b95a3;
+--accent:#4ea1ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme: light){:root{--bg:#f4f6f8;--panel:#fff;--panel2:#f0f2f5;--line:#d8dde3;--text:#1b1f24;--dim:#5b6573}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
+header h1{font-size:18px;margin:0 12px 0 0}
+main{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:16px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+section h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+label{display:flex;flex-direction:column;gap:4px;color:var(--dim);font-size:12px}
+label.inline{flex-direction:row;align-items:center;gap:6px;color:var(--text);font-size:13px}
+input,select,textarea{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
+textarea{font-family:var(--mono);font-size:12px;width:100%;min-height:260px}
+button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer;font:inherit}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{border-color:var(--bad);color:var(--bad)}
+button.small{padding:2px 8px;font-size:12px}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
+.s-running{color:var(--ok);border-color:var(--ok)}.s-backoff,.s-starting{color:var(--warn);border-color:var(--warn)}
+.s-stopped{color:var(--dim)}.s-failed{color:var(--bad);border-color:var(--bad)}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--dim);font-weight:500}
+.mono{font-family:var(--mono);font-size:12px}
+.dim{color:var(--dim)}
+.msg{padding:8px 12px;border-radius:6px;margin:4px 0;font-size:13px}
+.msg.err{background:color-mix(in srgb,var(--bad) 15%,transparent);border:1px solid var(--bad)}
+.msg.warn{background:color-mix(in srgb,var(--warn) 15%,transparent);border:1px solid var(--warn)}
+.msg.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);border:1px solid var(--ok)}
+.chan{border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;background:var(--panel2)}
+.chan h3{margin:0;font-size:14px}
+pre.log{background:#0a0c0f;color:#cfd6df;font-family:var(--mono);font-size:12px;padding:10px;border-radius:6px;height:340px;overflow:auto;white-space:pre-wrap;margin:0}
+.meter{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden;width:120px;display:inline-block;vertical-align:middle}
+.meter>div{height:100%}
+svg text{fill:var(--dim);font-size:11px}
+.spacer{flex:1}
+details summary{cursor:pointer;color:var(--dim)}
+@media (max-width:600px){header{padding:10px 16px}main{padding:12px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>📡 MultiMux</h1>
+  <span id="runstate" class="pill">…</span>
+  <button class="primary" onclick="act('/api/start')">Start all</button>
+  <button onclick="act('/api/restart')">Restart all</button>
+  <button class="danger" onclick="act('/api/stop')">Stop all</button>
+  <span class="spacer"></span>
+  <span class="dim mono" id="version"></span>
+  <button onclick="checkUpdate()">Check for updates</button>
+</header>
+<main>
+  <div id="messages"></div>
+
+  <section>
+    <h2>Spectrum plan</h2>
+    <svg id="spectrum" width="100%" height="120" viewBox="0 0 1000 120" preserveAspectRatio="none"></svg>
+    <div class="dim" id="plantext"></div>
+  </section>
+
+  <section>
+    <h2>Processes</h2>
+    <table><thead><tr><th>Name</th><th>State</th><th>PID</th><th>Uptime</th><th>Restarts</th><th>Level</th><th></th></tr></thead>
+    <tbody id="procs"></tbody></table>
+  </section>
+
+  <section id="logsec" hidden>
+    <h2>Log: <span id="logname" class="mono"></span><span class="spacer"></span>
+      <label class="inline"><input type="checkbox" id="follow" checked> follow</label>
+      <button class="small" onclick="closeLog()">close</button></h2>
+    <pre class="log" id="log"></pre>
+  </section>
+
+  <section>
+    <h2>Transmitter (HackRF)</h2>
+    <div class="grid">
+      <label>Device args<input id="hw-device"></label>
+      <label>TX VGA gain (0–47 dB) <span><input type="range" id="hw-tx_gain" min="0" max="47" style="width:100%"> <b id="gainval"></b></span></label>
+      <label class="inline"><input type="checkbox" id="hw-amp"> RF amp (+14 dB)</label>
+      <label>Centre frequency (Hz or "auto")<input id="hw-center_freq"></label>
+      <label>Sample rate (Hz or "auto")<input id="hw-sample_rate"></label>
+      <label>Baseband filter (Hz or "auto")<input id="hw-bandwidth"></label>
+      <label>Master scale ("auto" = 1/N)<input id="hw-master_scale"></label>
+      <label>Frequency correction (ppm)<input id="hw-ppm" type="number" step="0.1"></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Channels <span class="spacer"></span>
+      <select id="addblock"></select><button onclick="addChannel()">+ Add channel</button></h2>
+    <div id="channels"></div>
+  </section>
+
+  <section>
+    <h2>Settings</h2>
+    <div class="grid">
+      <label class="inline"><input type="checkbox" id="autostart"> Start everything when the service starts</label>
+      <label>odr-dabmod binary<input id="bin-odr_dabmod"></label>
+      <label>Python (with GNU Radio)<input id="bin-python"></label>
+      <label>Update branch<input id="up-branch"></label>
+      <label>Web username<input id="web-username"></label>
+      <label>Web password (blank = keep)<input id="web-password" type="password" autocomplete="new-password"></label>
+    </div>
+  </section>
+
+  <div class="row" style="position:sticky;bottom:0;background:var(--bg);padding:10px 0">
+    <button class="primary" onclick="saveConfig()">Save &amp; apply</button>
+    <button onclick="loadConfig()">Discard changes</button>
+    <span class="spacer"></span>
+    <button onclick="runDoctor()">Run system check</button>
+  </div>
+
+  <section id="doctorsec" hidden><h2>System check</h2><table id="doctor"></table></section>
+  <section id="updatesec" hidden><h2>Updates</h2><div id="update"></div></section>
+</main>
+
+<script>
+let cfg = null, blocks = {}, inputTypes = {}, status = null, logName = null, logSeq = 0;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const mhz = hz => (hz/1e6).toFixed(3);
+
+async function api(path, opts={}) {
+  opts.headers = Object.assign({"X-Multimux":"1","Content-Type":"application/json"}, opts.headers||{});
+  const r = await fetch(path, opts);
+  const ct = r.headers.get("content-type")||"";
+  const body = ct.includes("json") ? await r.json() : await r.text();
+  if (!r.ok) throw new Error(body.error || r.statusText);
+  return body;
+}
+function flash(text, kind="ok", ms=6000) {
+  const d = document.createElement("div"); d.className = "msg "+kind; d.textContent = text;
+  $("messages").appendChild(d); if (ms) setTimeout(()=>d.remove(), ms);
+}
+async function act(path) { try { await api(path, {method:"POST"}); setTimeout(refresh, 500); } catch(e) { flash(e.message,"err"); } }
+
+// ---------- config form ----------
+async function loadConfig() {
+  cfg = await api("/api/config");
+  for (const k of ["device","tx_gain","center_freq","sample_rate","bandwidth","master_scale","ppm"]) $("hw-"+k).value = cfg.hackrf[k];
+  $("hw-amp").checked = cfg.hackrf.amp; $("gainval").textContent = cfg.hackrf.tx_gain + " dB";
+  for (const k of ["odr_dabmod","python"]) $("bin-"+k).value = cfg.binaries[k];
+  $("up-branch").value = cfg.update.branch; $("autostart").checked = cfg.autostart;
+  $("web-username").value = cfg.web.username; $("web-password").value = "";
+  renderChannels();
+}
+$("hw-tx_gain").oninput = e => $("gainval").textContent = e.target.value + " dB";
+
+function numOrAuto(v) { v = String(v).trim(); return (v === "" || v === "auto") ? "auto" : Number(v); }
+function collect() {
+  const c = structuredClone(cfg);
+  c.hackrf.device = $("hw-device").value.trim();
+  c.hackrf.tx_gain = Number($("hw-tx_gain").value);
+  c.hackrf.amp = $("hw-amp").checked;
+  for (const k of ["center_freq","sample_rate","bandwidth","master_scale"]) c.hackrf[k] = numOrAuto($("hw-"+k).value);
+  c.hackrf.ppm = Number($("hw-ppm").value)||0;
+  for (const k of ["odr_dabmod","python"]) c.binaries[k] = $("bin-"+k).value.trim();
+  c.update.branch = $("up-branch").value.trim() || "main";
+  c.autostart = $("autostart").checked;
+  c.web.username = $("web-username").value.trim() || "admin";
+  c.web.password = $("web-password").value || "********";
+  c.channels.forEach((ch, i) => {
+    const q = s => document.querySelector(`[data-ch="${i}"][data-f="${s}"]`);
+    ch.block = q("block").value; ch.enabled = q("enabled").checked;
+    ch.input_type = q("input_type").value; ch.source = q("source").value.trim();
+    ch.gain = Number(q("gain").value); ch.mod_digital_gain = Number(q("mod_digital_gain").value);
+    ch.iq_port = Number(q("iq_port").value);
+  });
+  return c;
+}
+async function saveConfig() {
+  try {
+    const r = await api("/api/config", {method:"PUT", body: JSON.stringify(collect())});
+    flash("Saved." + (status && status.running ? " Restarting the chain…" : ""));
+    (r.warnings||[]).forEach(w => flash(w, "warn", 10000));
+    await loadConfig(); refresh();
+  } catch(e) { flash("Not saved: " + e.message, "err", 12000); }
+}
+
+function blockOptions(sel) {
+  return Object.keys(blocks).map(b => `<option ${b===sel?"selected":""}>${b}</option>`).join("");
+}
+const TYPE_LABELS = {zmq:"ETI over ZeroMQ", edi:"EDI (TCP/UDP)", eti_tcp:"ETI over TCP", eti_file:"ETI file / pipe", iq:"IQ from remote ODR-DabMod"};
+function typeOptions(sel) {
+  return Object.keys(inputTypes).map(t => `<option value="${t}" ${t===sel?"selected":""}>${TYPE_LABELS[t]||t}</option>`).join("");
+}
+function renderChannels() {
+  $("channels").innerHTML = cfg.channels.map((ch, i) => {
+    const it = inputTypes[ch.input_type] || {};
+    return `
+    <div class="chan">
+      <div class="row">
+        <h3>Channel</h3>
+        <select data-ch="${i}" data-f="block">${blockOptions(ch.block)}</select>
+        <span class="dim">${blocks[ch.block] ? mhz(blocks[ch.block])+" MHz" : ""}</span>
+        <label class="inline"><input type="checkbox" data-ch="${i}" data-f="enabled" ${ch.enabled?"checked":""}> enabled</label>
+        <span class="spacer"></span>
+        <button class="small danger" onclick="removeChannel(${i})">remove</button>
+      </div>
+      <div class="grid" style="margin-top:10px;grid-template-columns:200px 1fr">
+        <label>Input feed type<select data-ch="${i}" data-f="input_type" onchange="cfg=collect();renderChannels()">${typeOptions(ch.input_type)}</select></label>
+        <label>Feed address<input class="mono" data-ch="${i}" data-f="source" value="${esc(ch.source)}" placeholder="${esc(it.example)}"></label>
+      </div>
+      <div class="dim" style="margin:4px 0 0">${esc(it.help)}</div>
+      <div class="grid" style="margin-top:10px">
+        <label>Combiner gain<input type="number" step="0.05" data-ch="${i}" data-f="gain" value="${ch.gain}"></label>
+        <label ${ch.input_type==="iq"?"hidden":""}>DabMod digital gain<input type="number" step="0.05" data-ch="${i}" data-f="mod_digital_gain" value="${ch.mod_digital_gain}"></label>
+        <label ${ch.input_type==="iq"?"hidden":""}>Local IQ port (mod → combiner)<input type="number" data-ch="${i}" data-f="iq_port" value="${ch.iq_port}"></label>
+      </div>
+    </div>`;}).join("") || `<div class="dim">No channels yet.</div>`;
+}
+function addChannel() {
+  cfg = collect();
+  const b = $("addblock").value;
+  if (cfg.channels.some(c => c.block === b)) return flash(b + " is already in the list", "warn");
+  cfg.channels.push({block:b, enabled:true, input_type:"zmq", source:"", gain:1, mod_digital_gain:0.8, iq_port:null});
+  renderChannels(); flash("Added " + b + ". Set its feed address, then Save.", "ok");
+}
+function removeChannel(i) {
+  if (!confirm("Remove this channel?")) return;
+  cfg = collect(); cfg.channels.splice(i, 1); renderChannels();
+}
+
+// ---------- status ----------
+function fmtUptime(s) { if (s == null) return ""; s = Math.floor(s);
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60); return h ? `${h}h ${m}m` : m ? `${m}m ${s%60}s` : `${s}s`; }
+function meter(st) {
+  if (!st) return "";
+  const flowing = st.rate > 0.5 * st.expected_rate;
+  const pct = Math.min(100, st.peak*100);
+  const col = st.peak >= 1 ? "var(--bad)" : st.peak > 0.85 ? "var(--warn)" : "var(--ok)";
+  return `<span class="meter" title="peak ${st.peak.toFixed(3)}, rms ${st.rms.toFixed(3)}"><div style="width:${pct}%;background:${col}"></div></span>
+    <span class="mono dim"> ${flowing ? "pk "+st.peak.toFixed(2) : "<b style='color:var(--bad)'>no samples</b>"}${st.clip_pct>0?` <b style="color:var(--bad)">clip ${st.clip_pct.toFixed(2)}%</b>`:""}</span>`;
+}
+async function refresh() {
+  try { status = await api("/api/status"); } catch(e) { $("runstate").textContent = "offline"; $("runstate").className = "pill s-failed"; return; }
+  $("version").textContent = status.version;
+  const bad = status.processes.some(p => p.state !== "running");
+  $("runstate").textContent = !status.running ? "stopped" : bad ? "degraded" : "on air";
+  $("runstate").className = "pill " + (!status.running ? "s-stopped" : bad ? "s-backoff" : "s-running");
+  $("procs").innerHTML = status.processes.map(p => {
+    const probe = p.kind === "combiner" ? status.stats.output : p.kind === "mod" ? status.stats[p.name.replace(/-mod$/,"")] : null;
+    return `<tr><td class="mono">${esc(p.name)}</td><td><span class="pill s-${p.state}">${p.state}</span></td>
+      <td class="mono">${p.pid ?? ""}</td><td>${fmtUptime(p.uptime)}</td><td>${p.restarts}</td><td>${meter(probe)}</td>
+      <td class="row"><button class="small" onclick="showLog('${esc(p.name)}')">log</button>
+      <button class="small" onclick="act('/api/process/${esc(p.name)}/restart')">restart</button>
+      <button class="small" onclick="act('/api/process/${esc(p.name)}/stop')">stop</button></td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="dim">Nothing running. Press “Start all”.</td></tr>`;
+  drawPlan(status.plan, status.errors, status.warnings);
+}
+function drawPlan(plan, errors, warnings) {
+  const svg = $("spectrum");
+  if (!plan) { svg.innerHTML = ""; $("plantext").innerHTML = (errors||[]).map(e => `<div class="msg err">${esc(e)}</div>`).join(""); return; }
+  const fs = plan.sample_rate, c = plan.center_hz, x = f => 500 + (f - c) / fs * 1000;
+  let s = `<rect x="0" y="10" width="1000" height="85" fill="none" stroke="var(--line)"/>`;
+  s += `<line x1="500" y1="5" x2="500" y2="100" stroke="var(--bad)" stroke-dasharray="3 3"/><text x="504" y="115">LO ${mhz(c)}</text>`;
+  for (const [b, f] of Object.entries(plan.freqs)) {
+    const st = status.stats[b], live = st && st.rate > 0.5*st.expected_rate;
+    s += `<rect x="${x(f-768000)}" y="30" width="${1536000/fs*1000}" height="65" rx="3" fill="${live ? "var(--ok)" : "var(--accent)"}" opacity="0.55"/>
+      <text x="${x(f)}" y="25" text-anchor="middle" style="fill:var(--text);font-weight:600">${b}</text>
+      <text x="${x(f)}" y="65" text-anchor="middle" style="fill:var(--text)">${mhz(f)}</text>`;
+  }
+  s += `<text x="2" y="115">${mhz(c - fs/2)}</text><text x="998" y="115" text-anchor="end">${mhz(c + fs/2)}</text>`;
+  svg.innerHTML = s;
+  $("plantext").innerHTML = `Tuned to <b>${mhz(c)} MHz</b>, ${mhz(fs)} MS/s (×${plan.interp} interpolation).` +
+    (warnings||[]).map(w => `<div class="msg warn">${esc(w)}</div>`).join("");
+}
+
+// ---------- logs ----------
+function showLog(name) { logName = name; logSeq = 0; $("log").textContent = ""; $("logname").textContent = name; $("logsec").hidden = false; pollLog(); $("logsec").scrollIntoView({behavior:"smooth"}); }
+function closeLog() { logName = null; $("logsec").hidden = true; }
+async function pollLog() {
+  if (!logName) return;
+  try {
+    const r = await api(`/api/logs/${encodeURIComponent(logName)}?since=${logSeq}`);
+    if (r.lines.length) {
+      const el = $("log");
+      el.textContent += r.lines.map(l => new Date(l.time*1000).toLocaleTimeString() + "  " + l.line).join("\n") + "\n";
+      logSeq = r.lines[r.lines.length-1].seq;
+      if ($("follow").checked) el.scrollTop = el.scrollHeight;
+    }
+  } catch(e) {}
+}
+
+// ---------- doctor / updates ----------
+async function runDoctor() {
+  $("doctorsec").hidden = false; $("doctor").innerHTML = `<tr><td class="dim">Checking…</td></tr>`;
+  const res = await api("/api/doctor");
+  $("doctor").innerHTML = res.map(r => `<tr><td>${r.warn ? "⚠️" : r.ok ? "✅" : "❌"}</td><td>${esc(r.name)}</td>
+    <td class="mono">${esc(r.detail)}</td><td class="dim">${esc(r.fix)}</td></tr>`).join("");
+  $("doctorsec").scrollIntoView({behavior:"smooth"});
+}
+async function checkUpdate() {
+  $("updatesec").hidden = false; $("update").innerHTML = `<span class="dim">Checking GitHub…</span>`;
+  const r = await api("/api/update/check");
+  if (!r.ok) { $("update").innerHTML = `<div class="msg err">${esc(r.error)}</div>`; return; }
+  if (!r.behind) { $("update").innerHTML = `<div class="msg ok">Up to date (${esc(r.version)} on ${esc(r.branch)}).</div>`; return; }
+  $("update").innerHTML = `<p>${r.behind} new commit(s) on <b>${esc(r.branch)}</b>:</p>
+    <pre class="mono">${r.changes.map(esc).join("\n")}</pre>
+    ${r.dirty ? `<div class="msg warn">Local files were changed in the install directory; update is blocked.</div>` :
+      `<button class="primary" onclick="applyUpdate()">Update and restart</button>
+       <span class="dim">Transmission stops for a few seconds while the service restarts.</span>`}`;
+  $("updatesec").scrollIntoView({behavior:"smooth"});
+}
+async function applyUpdate() {
+  const r = await api("/api/update/apply", {method:"POST"});
+  if (!r.ok) return flash(r.error, "err", 0);
+  flash(r.message, "ok");
+  if (r.updated) setTimeout(() => location.reload(), 8000);
+}
+
+(async () => {
+  blocks = await api("/api/blocks"); inputTypes = await api("/api/input_types");
+  $("addblock").innerHTML = blockOptions("12B");
+  await loadConfig(); await refresh();
+  setInterval(refresh, 2000); setInterval(pollLog, 1000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+[Unit]
+Description=MultiMux - several DAB ensembles on one HackRF
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=multimux
+Group=multimux
+WorkingDirectory=/opt/multimux
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/multimux
+Environment=MULTIMUX_CONFIG=/etc/multimux/config.json
+Environment=MULTIMUX_STATE=/var/lib/multimux
+ExecStart=/usr/bin/python3 -m multimux serve
+# Always come back: after a crash, after a self-update, after a reboot.
+Restart=always
+RestartSec=3
+# Stop children cleanly (combiner first) before systemd kills the group.
+KillMode=mixed
+TimeoutStopSec=30
+Nice=-5
+LimitRTPRIO=99
+
+[Install]
+WantedBy=multi-user.target
