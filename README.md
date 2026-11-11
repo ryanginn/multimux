@@ -1,12 +1,24 @@
 # MultiMux
 
-Run several DAB ensembles (e.g. **12A, 12B, 12C, 12D**) on **one HackRF**, all managed from a web GUI.
+Take several existing DAB feeds (ETI or EDI from your ODR-DabMux setups) and transmit them as
+separate ensembles (e.g. **12A, 12B, 12C, 12D**) on **one HackRF**, managed from a web GUI.
+MultiMux does **not** run the muxes: point each channel at a feed that already exists.
 
 ```
- ODR-AudioEnc ─► ODR-DabMux ─► ODR-DabMod ─┐   (one chain per block, ZeroMQ between each)
- ODR-AudioEnc ─► ODR-DabMux ─► ODR-DabMod ─┼─► combiner (GNU Radio) ─► HackRF
- ODR-AudioEnc ─► ODR-DabMux ─► ODR-DabMod ─┘
+ your mux A ─ ETI/ZMQ ─► ODR-DabMod ─┐
+ your mux B ─ EDI ─────► ODR-DabMod ─┼─► combiner (GNU Radio) ─► HackRF
+ remote ODR-DabMod ─ IQ/ZMQ ─────────┘
 ```
+
+Supported feed types per channel:
+
+| Type | Example address | Notes |
+|---|---|---|
+| ETI over ZeroMQ | `tcp://192.168.1.10:9100` | ODR-DabMux `outputs { zmq "zmq+tcp://*:9100" }` |
+| EDI | `tcp://192.168.1.10:9201`, `udp://:12000`, `udp://@239.1.1.1:12000` | ODR-DabMux `edi` output |
+| ETI over TCP | `tcp://192.168.1.10:9300` | raw ETI stream |
+| ETI file / pipe | `/path/to/feed.eti` | |
+| IQ from remote ODR-DabMod | `tcp://192.168.1.20:54001` | already modulated (2.048 MS/s, `output=zmq`); no local modulator is started |
 
 ## Install (Debian / Ubuntu / Raspberry Pi OS)
 
@@ -18,14 +30,14 @@ The installer:
 
 * installs GNU Radio, gr-osmosdr and the HackRF tools **from apt**, then checks that the system
   Python can actually import them (most broken installs come from pip, conda or venv GNU Radio)
-* installs ODR-DabMux and ODR-DabMod from apt, or builds them from source when apt doesn't have them
+* installs ODR-DabMod from apt, or builds it from source when apt doesn't have it
 * clones this repo to `/opt/multimux` and creates a `multimux` system user in the `plugdev` group
   (needed for HackRF USB access)
 * installs and starts the `multimux` systemd service
 * runs a system check and prints the web address and a generated password
 
 Running it again upgrades in place and keeps your config. Options: `--branch`, `--port`,
-`--build-odr`, `--skip-odr`, `--with-audioenc`, `--no-service`.
+`--build-odr`, `--skip-odr`, `--no-service`.
 
 ## Web GUI (`http://<host>:8080/`)
 
@@ -33,9 +45,7 @@ Running it again upgrades in place and keeps your config. Options: `--branch`, `
 * **Live status** for each process: state, uptime, restart count, and a level meter that shows
   whether samples are arriving from each modulator and whether the output is clipping
 * **Spectrum plan**: where each ensemble sits and where the HackRF LO is
-* **Channels**: add or remove blocks, set gains and ports, and edit each ODR-DabMux config in the
-  browser. You can add extra processes per channel (ODR-AudioEnc, ODR-PadEnc, …), and those are
-  supervised too.
+* **Channels**: add or remove blocks, choose each one's feed type and address, and set gains
 * **Transmitter**: TX gain, RF amp, centre frequency and sample rate (both default to *auto*), ppm
 * **System check**: the same checks as `multimux doctor`, with suggested fixes
 * **Check for updates**: pulls the latest version from GitHub and restarts the service
@@ -43,8 +53,9 @@ Running it again upgrades in place and keeps your config. Options: `--branch`, `
 ## Reliability
 
 * Every process restarts automatically after a crash (backoff from 1 s up to 30 s).
-* Processes start in order (encoders → muxes → modulators → combiner) and stop in reverse order,
-  so the HackRF is always released cleanly.
+* The modulators start before the combiner and stop after it, so the HackRF is always released
+  cleanly. If a feed drops, ODR-DabMod keeps reconnecting and the meter shows **no samples** for
+  that block.
 * The systemd service uses `Restart=always`, so it comes back after reboots, crashes and updates.
 * The frequency plan is calculated for you. The centre frequency and sample rate are picked so that
   every block fits and the HackRF LO/DC spike stays outside every ensemble. Invalid layouts are
@@ -62,15 +73,6 @@ multimux plan              # show centre frequency / sample rate / offsets
 multimux combiner          # run only the combiner in the foreground
 sudo systemctl status multimux
 sudo journalctl -u multimux -f
-```
-
-## Feeding audio
-
-Each channel's mux config has a DAB+ subchannel listening on a ZeroMQ port (for example `9001`).
-Add an extra process to the channel in the GUI, for example:
-
-```bash
-odr-audioenc -v https://stream.example.com/live.mp3 -b 96 -r 48000 -o tcp://localhost:9001
 ```
 
 ## Levels

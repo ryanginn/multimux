@@ -53,15 +53,35 @@ class ConfigTests(unittest.TestCase):
             config.save(cfg, path)
             self.assertEqual(config.load(path), cfg)
 
-    def test_rendered_configs(self):
+    def test_rendered_mod_configs(self):
         cfg = config.load("/nonexistent/x.json")
         ch = cfg["channels"][0]
-        mux = odr.render_mux_config(ch)
-        self.assertIn(f"zmq+tcp://*:{ch['eti_port']}", mux)
-        self.assertNotIn(odr.ETI_TOKEN, mux)
         mod = odr.render_mod_config(ch)
-        self.assertIn(f"listen=tcp://*:{ch['iq_port']}", mod)
-        self.assertIn(f"source=tcp://localhost:{ch['eti_port']}", mod)
+        self.assertIn("transport=zeromq", mod)
+        self.assertIn("source=tcp://localhost:9100", mod)
+        self.assertIn(f"listen=tcp://127.0.0.1:{ch['iq_port']}", mod)
+        ch.update(input_type="edi", source="udp://:12000")
+        self.assertIn("transport=edi", odr.render_mod_config(ch))
+
+    def test_remote_iq_skips_modulator(self):
+        cfg = config.load("/nonexistent/x.json")
+        ch = cfg["channels"][1]
+        ch.update(input_type="iq", source="tcp://10.0.0.5:54001")
+        self.assertFalse(odr.runs_modulator(ch))
+        self.assertEqual(odr.combiner_endpoint(ch), "tcp://10.0.0.5:54001")
+
+    def test_validation(self):
+        cfg = config.load("/nonexistent/x.json")
+        cfg["channels"][0]["source"] = ""
+        cfg["channels"][1]["source"] = "192.168.1.1:9100"
+        errors, _, _ = config.validate(cfg)
+        self.assertEqual(len(errors), 2)
+
+    def test_old_config_migrates(self):
+        cfg = {"channels": [{"block": "12a", "manage_mux": True, "mux_config": "x",
+                             "eti_port": 9100, "extra_processes": []}]}
+        config.normalize(cfg)
+        self.assertEqual(set(cfg["channels"][0]), set(config.CHANNEL_DEFAULTS))
 
 
 if __name__ == "__main__":

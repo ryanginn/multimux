@@ -4,8 +4,8 @@
 Run by the multimux service, or by hand:
     python3 -m multimux.combiner --config /etc/multimux/config.json
 
-Each enabled channel's ODR-DabMod publishes complex float32 IQ at 2.048 MS/s
-on a ZMQ PUB socket. Each stream is upsampled, frequency shifted to its slot,
+Each channel's ODR-DabMod (local, fed by your ETI/EDI feed, or remote)
+publishes complex float32 IQ at 2.048 MS/s on a ZMQ PUB socket. Each stream is upsampled, frequency shifted to its slot,
 summed and sent to the HackRF. Level statistics are printed as
 '@@STATS {json}' lines that the web GUI picks up.
 """
@@ -23,7 +23,7 @@ from gnuradio import filter as grfilter
 from gnuradio.filter import firdes
 import osmosdr
 
-from multimux import bands, config as mconfig
+from multimux import bands, config as mconfig, odr
 
 
 class LevelProbe(gr.sync_block):
@@ -95,7 +95,7 @@ class Combiner(gr.top_block):
 
         adder = blocks.add_cc()
         for i, ch in enumerate(chans):
-            endpoint = f"tcp://127.0.0.1:{ch['iq_port']}"
+            endpoint = odr.combiner_endpoint(ch)
             src = zmq_source(endpoint)
             probe = LevelProbe(ch["block"], bands.BASE_RATE)
             resamp = grfilter.interp_fir_filter_ccf(interp, taps)
@@ -122,7 +122,7 @@ class Combiner(gr.top_block):
         print(f"Centre {plan['center_hz']/1e6:.3f} MHz, {fs/1e6:.3f} MS/s "
               f"(x{interp}), master scale {scale:.3f}", flush=True)
         for ch in chans:
-            print(f"  {ch['block']}: tcp://127.0.0.1:{ch['iq_port']} -> "
+            print(f"  {ch['block']}: {odr.combiner_endpoint(ch)} -> "
                   f"{plan['offsets'][ch['block']]/1e6:+.3f} MHz", flush=True)
         for w in plan["warnings"]:
             print("WARNING: " + w, flush=True)

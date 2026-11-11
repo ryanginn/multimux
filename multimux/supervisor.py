@@ -158,18 +158,8 @@ class Supervisor:
         env["MULTIMUX_CONFIG"] = self.config_path
         enabled = [c for c in cfg["channels"] if c.get("enabled")]
         for ch in enabled:
-            b = ch["block"]
-            for ex in ch.get("extra_processes") or []:
-                if ex.get("enabled", True) and ex.get("command"):
-                    n = f"{b}-{ex['name']}"
-                    procs[n] = ManagedProcess(n, "extra", ["/bin/sh", "-c", ex["command"]],
-                                              cwd=self.run_dir, env=env)
-            if ch.get("manage_mux"):
-                path = os.path.join(self.run_dir, f"mux-{b}.mux")
-                _write(path, odr.render_mux_config(ch))
-                procs[f"{b}-mux"] = ManagedProcess(f"{b}-mux", "mux", [bins["odr_dabmux"], path],
-                                                   cwd=self.run_dir, env=env)
-            if ch.get("manage_mod"):
+            if odr.runs_modulator(ch):
+                b = ch["block"]
                 path = os.path.join(self.run_dir, f"mod-{b}.ini")
                 _write(path, odr.render_mod_config(ch))
                 procs[f"{b}-mod"] = ManagedProcess(f"{b}-mod", "mod", [bins["odr_dabmod"], path],
@@ -186,8 +176,8 @@ class Supervisor:
             self.stop_all()
             self.procs = self._build()
             self.stats = {}
-            # muxes/encoders first, then modulators, then the combiner
-            order = ["extra", "mux", "mod", "combiner"]
+            # modulators first, then the combiner
+            order = ["mod", "combiner"]
             for kind in order:
                 group = [p for p in self.procs.values() if p.kind == kind]
                 for p in group:

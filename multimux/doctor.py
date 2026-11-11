@@ -51,7 +51,7 @@ def run(cfg, check_ports=False):
     results.append(_check("numpy", rc == 0, out.splitlines()[-1] if out else "",
                           "sudo apt install python3-numpy"))
 
-    for key, pkg in (("odr_dabmux", "ODR-DabMux"), ("odr_dabmod", "ODR-DabMod")):
+    for key, pkg in (("odr_dabmod", "ODR-DabMod"),):
         b = cfg["binaries"][key]
         path = shutil.which(b)
         detail = path or "not found"
@@ -84,8 +84,8 @@ def run(cfg, check_ports=False):
     if check_ports:
         busy = []
         for c in cfg["channels"]:
-            if c.get("enabled"):
-                busy += [p for p in (c["eti_port"], c["iq_port"]) if not _port_free(p)]
+            if c.get("enabled") and c["input_type"] != "iq" and not _port_free(c["iq_port"]):
+                busy.append(c["iq_port"])
         results.append(_check("Ports free", not busy,
                               "busy: " + ", ".join(map(str, busy)) if busy else "all free",
                               "Stop other ODR processes using these ports"))

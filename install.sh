@@ -9,9 +9,8 @@
 #   --branch NAME       git branch to install / follow for updates (default: main)
 #   --repo URL          git repository (default: https://github.com/ryanginn/multimux.git)
 #   --port N            web GUI port (default: 8080)
-#   --build-odr         always build ODR-DabMux/ODR-DabMod from source
-#   --skip-odr          don't install ODR-DabMux/ODR-DabMod at all
-#   --with-audioenc     also build ODR-AudioEnc (for feeding the muxes)
+#   --build-odr         always build ODR-DabMod from source
+#   --skip-odr          don't install ODR-DabMod (only "IQ from remote ODR-DabMod" feeds will work)
 #   --no-service        install files only, don't create the systemd service
 set -euo pipefail
 
@@ -19,7 +18,6 @@ REPO_URL="https://github.com/ryanginn/multimux.git"
 BRANCH="main"
 PORT=8080
 ODR_MODE="auto"
-AUDIOENC=0
 SERVICE=1
 PREFIX=/opt/multimux
 CONF_DIR=/etc/multimux
@@ -34,7 +32,6 @@ while [ $# -gt 0 ]; do
     --port) PORT="$2"; shift 2 ;;
     --build-odr) ODR_MODE="build"; shift ;;
     --skip-odr) ODR_MODE="skip"; shift ;;
-    --with-audioenc) AUDIOENC=1; shift ;;
     --no-service) SERVICE=0; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -86,25 +83,13 @@ need_odr_build_deps() {
 }
 
 if [ "$ODR_MODE" != "skip" ]; then
-  if [ "$ODR_MODE" = "auto" ] && ! command -v odr-dabmux >/dev/null; then
-    apt-get install -y -q odr-dabmux >/dev/null 2>&1 && c_ok "odr-dabmux installed from apt" || true
-  fi
   if [ "$ODR_MODE" = "auto" ] && ! command -v odr-dabmod >/dev/null; then
     apt-get install -y -q odr-dabmod >/dev/null 2>&1 && c_ok "odr-dabmod installed from apt" || true
-  fi
-  if [ "$ODR_MODE" = "build" ] || ! command -v odr-dabmux >/dev/null; then
-    need_odr_build_deps
-    build_odr ODR-DabMux https://github.com/Opendigitalradio/ODR-DabMux.git
   fi
   if [ "$ODR_MODE" = "build" ] || ! command -v odr-dabmod >/dev/null; then
     need_odr_build_deps
     # Only the ZeroMQ output is needed: the HackRF is driven by the combiner.
     build_odr ODR-DabMod https://github.com/Opendigitalradio/ODR-DabMod.git --disable-output-uhd --disable-native
-  fi
-  if [ "$AUDIOENC" = 1 ] && ! command -v odr-audioenc >/dev/null; then
-    need_odr_build_deps
-    apt-get install -y -q libasound2-dev libjack-jackd2-dev libvlc-dev vlc-plugin-base
-    build_odr ODR-AudioEnc https://github.com/Opendigitalradio/ODR-AudioEnc.git --enable-alsa --enable-jack --enable-vlc
   fi
 fi
 
@@ -112,7 +97,7 @@ fi
 if ! id "$SVC_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin "$SVC_USER"
 fi
-for g in plugdev dialout audio; do
+for g in plugdev dialout; do
   getent group "$g" >/dev/null && usermod -aG "$g" "$SVC_USER"
 done
 

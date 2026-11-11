@@ -9,6 +9,7 @@
 --accent:#4ea1ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 @media (prefers-color-scheme: light){:root{--bg:#f4f6f8;--panel:#fff;--panel2:#f0f2f5;--line:#d8dde3;--text:#1b1f24;--dim:#5b6573}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 header{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
 header h1{font-size:18px;margin:0 12px 0 0}
@@ -105,7 +106,6 @@ details summary{cursor:pointer;color:var(--dim)}
     <h2>Settings</h2>
     <div class="grid">
       <label class="inline"><input type="checkbox" id="autostart"> Start everything when the service starts</label>
-      <label>odr-dabmux binary<input id="bin-odr_dabmux"></label>
       <label>odr-dabmod binary<input id="bin-odr_dabmod"></label>
       <label>Python (with GNU Radio)<input id="bin-python"></label>
       <label>Update branch<input id="up-branch"></label>
@@ -126,7 +126,7 @@ details summary{cursor:pointer;color:var(--dim)}
 </main>
 
 <script>
-let cfg = null, blocks = {}, status = null, logName = null, logSeq = 0;
+let cfg = null, blocks = {}, inputTypes = {}, status = null, logName = null, logSeq = 0;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const mhz = hz => (hz/1e6).toFixed(3);
@@ -150,7 +150,7 @@ async function loadConfig() {
   cfg = await api("/api/config");
   for (const k of ["device","tx_gain","center_freq","sample_rate","bandwidth","master_scale","ppm"]) $("hw-"+k).value = cfg.hackrf[k];
   $("hw-amp").checked = cfg.hackrf.amp; $("gainval").textContent = cfg.hackrf.tx_gain + " dB";
-  for (const k of ["odr_dabmux","odr_dabmod","python"]) $("bin-"+k).value = cfg.binaries[k];
+  for (const k of ["odr_dabmod","python"]) $("bin-"+k).value = cfg.binaries[k];
   $("up-branch").value = cfg.update.branch; $("autostart").checked = cfg.autostart;
   $("web-username").value = cfg.web.username; $("web-password").value = "";
   renderChannels();
@@ -165,7 +165,7 @@ function collect() {
   c.hackrf.amp = $("hw-amp").checked;
   for (const k of ["center_freq","sample_rate","bandwidth","master_scale"]) c.hackrf[k] = numOrAuto($("hw-"+k).value);
   c.hackrf.ppm = Number($("hw-ppm").value)||0;
-  for (const k of ["odr_dabmux","odr_dabmod","python"]) c.binaries[k] = $("bin-"+k).value.trim();
+  for (const k of ["odr_dabmod","python"]) c.binaries[k] = $("bin-"+k).value.trim();
   c.update.branch = $("up-branch").value.trim() || "main";
   c.autostart = $("autostart").checked;
   c.web.username = $("web-username").value.trim() || "admin";
@@ -173,13 +173,9 @@ function collect() {
   c.channels.forEach((ch, i) => {
     const q = s => document.querySelector(`[data-ch="${i}"][data-f="${s}"]`);
     ch.block = q("block").value; ch.enabled = q("enabled").checked;
-    ch.manage_mux = q("manage_mux").checked; ch.manage_mod = q("manage_mod").checked;
+    ch.input_type = q("input_type").value; ch.source = q("source").value.trim();
     ch.gain = Number(q("gain").value); ch.mod_digital_gain = Number(q("mod_digital_gain").value);
-    ch.eti_port = Number(q("eti_port").value); ch.iq_port = Number(q("iq_port").value);
-    ch.mux_config = q("mux_config").value;
-    ch.extra_processes = [...document.querySelectorAll(`[data-ex="${i}"]`)].map(r => ({
-      name: r.querySelector(".exname").value.trim(), command: r.querySelector(".excmd").value,
-      enabled: r.querySelector(".exen").checked})).filter(x => x.name || x.command);
+    ch.iq_port = Number(q("iq_port").value);
   });
   return c;
 }
@@ -195,63 +191,45 @@ async function saveConfig() {
 function blockOptions(sel) {
   return Object.keys(blocks).map(b => `<option ${b===sel?"selected":""}>${b}</option>`).join("");
 }
+const TYPE_LABELS = {zmq:"ETI over ZeroMQ", edi:"EDI (TCP/UDP)", eti_tcp:"ETI over TCP", eti_file:"ETI file / pipe", iq:"IQ from remote ODR-DabMod"};
+function typeOptions(sel) {
+  return Object.keys(inputTypes).map(t => `<option value="${t}" ${t===sel?"selected":""}>${TYPE_LABELS[t]||t}</option>`).join("");
+}
 function renderChannels() {
-  $("channels").innerHTML = cfg.channels.map((ch, i) => `
+  $("channels").innerHTML = cfg.channels.map((ch, i) => {
+    const it = inputTypes[ch.input_type] || {};
+    return `
     <div class="chan">
       <div class="row">
         <h3>Channel</h3>
         <select data-ch="${i}" data-f="block">${blockOptions(ch.block)}</select>
         <span class="dim">${blocks[ch.block] ? mhz(blocks[ch.block])+" MHz" : ""}</span>
         <label class="inline"><input type="checkbox" data-ch="${i}" data-f="enabled" ${ch.enabled?"checked":""}> enabled</label>
-        <label class="inline"><input type="checkbox" data-ch="${i}" data-f="manage_mux" ${ch.manage_mux?"checked":""}> run ODR-DabMux</label>
-        <label class="inline"><input type="checkbox" data-ch="${i}" data-f="manage_mod" ${ch.manage_mod?"checked":""}> run ODR-DabMod</label>
         <span class="spacer"></span>
         <button class="small danger" onclick="removeChannel(${i})">remove</button>
       </div>
+      <div class="grid" style="margin-top:10px;grid-template-columns:200px 1fr">
+        <label>Input feed type<select data-ch="${i}" data-f="input_type" onchange="cfg=collect();renderChannels()">${typeOptions(ch.input_type)}</select></label>
+        <label>Feed address<input class="mono" data-ch="${i}" data-f="source" value="${esc(ch.source)}" placeholder="${esc(it.example)}"></label>
+      </div>
+      <div class="dim" style="margin:4px 0 0">${esc(it.help)}</div>
       <div class="grid" style="margin-top:10px">
         <label>Combiner gain<input type="number" step="0.05" data-ch="${i}" data-f="gain" value="${ch.gain}"></label>
-        <label>DabMod digital gain<input type="number" step="0.05" data-ch="${i}" data-f="mod_digital_gain" value="${ch.mod_digital_gain}"></label>
-        <label>ETI port (mux → mod)<input type="number" data-ch="${i}" data-f="eti_port" value="${ch.eti_port}"></label>
-        <label>IQ port (mod → combiner)<input type="number" data-ch="${i}" data-f="iq_port" value="${ch.iq_port}"></label>
+        <label ${ch.input_type==="iq"?"hidden":""}>DabMod digital gain<input type="number" step="0.05" data-ch="${i}" data-f="mod_digital_gain" value="${ch.mod_digital_gain}"></label>
+        <label ${ch.input_type==="iq"?"hidden":""}>Local IQ port (mod → combiner)<input type="number" data-ch="${i}" data-f="iq_port" value="${ch.iq_port}"></label>
       </div>
-      <details style="margin-top:10px"><summary>ODR-DabMux configuration (ensemble, services, subchannels)</summary>
-        <div class="row" style="margin:6px 0"><button class="small" onclick="resetTemplate(${i})">Reset to template</button>
-        <span class="dim">Keep <span class="mono">%ETI_PORT%</span> in the outputs block.</span></div>
-        <textarea spellcheck="false" data-ch="${i}" data-f="mux_config">${esc(ch.mux_config)}</textarea>
-      </details>
-      <details style="margin-top:10px"><summary>Extra processes for this channel (audio encoders, PAD, …) – ${ (ch.extra_processes||[]).length }</summary>
-        <div id="ex-${i}">${(ch.extra_processes||[]).map(x => exRow(i,x)).join("")}</div>
-        <button class="small" onclick="addExtra(${i})">+ add process</button>
-        <div class="dim" style="margin-top:6px">Runs via <span class="mono">sh -c</span>, restarted automatically. Example:
-        <span class="mono">odr-audioenc -v https://stream.example/live.mp3 -b 96 -o tcp://localhost:9001</span></div>
-      </details>
-    </div>`).join("") || `<div class="dim">No channels yet.</div>`;
+    </div>`;}).join("") || `<div class="dim">No channels yet.</div>`;
 }
-function exRow(i, x) {
-  return `<div class="row" data-ex="${i}" style="margin:6px 0">
-    <input class="exen" type="checkbox" ${x.enabled!==false?"checked":""} title="enabled">
-    <input class="exname" placeholder="name" value="${esc(x.name)}" style="width:120px">
-    <input class="excmd mono" placeholder="command" value="${esc(x.command)}" style="flex:1;min-width:200px">
-    <button class="small" onclick="this.parentElement.remove()">✕</button></div>`;
-}
-function addExtra(i) { $("ex-"+i).insertAdjacentHTML("beforeend", exRow(i, {name:"",command:""})); }
 function addChannel() {
   cfg = collect();
-  const used = new Set(cfg.channels.map(c => c.block));
   const b = $("addblock").value;
-  if (used.has(b)) return flash(b + " is already in the list", "warn");
-  cfg.channels.push({block:b, enabled:true, manage_mux:true, manage_mod:true, gain:1, mod_digital_gain:0.8,
-    eti_port:null, iq_port:null, mux_config:null, extra_processes:[]});
-  renderChannels(); flash("Added " + b + ". Ports and template are filled in when you save.", "ok");
+  if (cfg.channels.some(c => c.block === b)) return flash(b + " is already in the list", "warn");
+  cfg.channels.push({block:b, enabled:true, input_type:"zmq", source:"", gain:1, mod_digital_gain:0.8, iq_port:null});
+  renderChannels(); flash("Added " + b + ". Set its feed address, then Save.", "ok");
 }
 function removeChannel(i) {
   if (!confirm("Remove this channel?")) return;
   cfg = collect(); cfg.channels.splice(i, 1); renderChannels();
-}
-async function resetTemplate(i) {
-  const b = document.querySelector(`[data-ch="${i}"][data-f="block"]`).value;
-  const t = await api(`/api/template?block=${b}&index=${i}`);
-  document.querySelector(`[data-ch="${i}"][data-f="mux_config"]`).value = t.mux_config;
 }
 
 // ---------- status ----------
@@ -343,7 +321,7 @@ async function applyUpdate() {
 }
 
 (async () => {
-  blocks = await api("/api/blocks");
+  blocks = await api("/api/blocks"); inputTypes = await api("/api/input_types");
   $("addblock").innerHTML = blockOptions("12B");
   await loadConfig(); await refresh();
   setInterval(refresh, 2000); setInterval(pollLog, 1000);

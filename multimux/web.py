@@ -100,10 +100,9 @@ def make_handler(app):
                 return self._send(200, app.public_config())
             if p == "/api/blocks":
                 return self._send(200, bands.BAND_III)
-            if p == "/api/template":
-                block = q.get("block", ["12A"])[0].upper()
-                idx = int(q.get("index", ["0"])[0])
-                return self._send(200, {"mux_config": odr.default_mux_config(block, idx)})
+            if p == "/api/input_types":
+                return self._send(200, {k: {"example": v[1], "help": v[2]}
+                                        for k, v in odr.INPUT_TYPES.items()})
             if p.startswith("/api/logs/"):
                 proc = app.sup.get(p[len("/api/logs/"):])
                 if not proc:

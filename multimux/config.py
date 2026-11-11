@@ -35,7 +35,6 @@ DEFAULTS = {
         "ppm": 0,
     },
     "binaries": {
-        "odr_dabmux": "odr-dabmux",
         "odr_dabmod": "odr-dabmod",
         "python": "/usr/bin/python3",
     },
@@ -45,15 +44,13 @@ DEFAULTS = {
 CHANNEL_DEFAULTS = {
     "block": "12A",
     "enabled": True,
-    "manage_mux": True,
-    "manage_mod": True,
-    "gain": 1.0,
+    "input_type": "zmq",     # see odr.INPUT_TYPES
+    "source": "",            # e.g. tcp://192.168.1.10:9100
+    "gain": 1.0,             # combiner gain for this channel
     "mod_digital_gain": 0.8,
-    "eti_port": None,
-    "iq_port": None,
-    "mux_config": None,
-    "extra_processes": [],   # [{"name": "audio1", "command": "odr-audioenc ...", "enabled": true}]
+    "iq_port": None,         # local port between ODR-DabMod and the combiner
 }
+OBSOLETE_CHANNEL_KEYS = ("manage_mux", "manage_mod", "eti_port", "mux_config", "extra_processes")
 
 
 def _merge(base, override):
@@ -71,7 +68,7 @@ def new_channel(cfg, block):
     ch["block"] = block
     cfg["channels"].append(ch)
     normalize(cfg)
-    return ch
+    return cfg["channels"][-1]
 
 
 def normalize(cfg):
@@ -82,25 +79,20 @@ def normalize(cfg):
     chans = []
     for raw in cfg.get("channels") or []:
         ch = _merge(CHANNEL_DEFAULTS, raw)
+        for k in OBSOLETE_CHANNEL_KEYS:
+            ch.pop(k, None)
         ch["block"] = str(ch["block"]).strip().upper()
+        ch["source"] = str(ch["source"] or "").strip()
         chans.append(ch)
-    used_eti = {c["eti_port"] for c in chans if c["eti_port"]}
+    cfg["binaries"].pop("odr_dabmux", None)
     used_iq = {c["iq_port"] for c in chans if c["iq_port"]}
     for idx, ch in enumerate(chans):
-        if not ch["eti_port"]:
-            p = 9100
-            while p in used_eti:
-                p += 1
-            ch["eti_port"] = p
-            used_eti.add(p)
         if not ch["iq_port"]:
             p = 54001
             while p in used_iq:
                 p += 1
             ch["iq_port"] = p
             used_iq.add(p)
-        if not ch["mux_config"]:
-            ch["mux_config"] = odr.default_mux_config(ch["block"], idx)
     cfg["channels"] = chans
     return cfg
 
@@ -117,16 +109,18 @@ def validate(cfg):
     except bands.PlanError as e:
         errors.append(str(e))
     ports = []
-    for c in cfg["channels"]:
-        ports += [c["eti_port"], c["iq_port"]]
-        if c["manage_mux"] and odr.ETI_TOKEN not in (c["mux_config"] or ""):
-            warnings.append(f"{c['block']}: mux config has no {odr.ETI_TOKEN} token; "
-                            "make sure its ETI output matches port " + str(c["eti_port"]))
-        names = [p.get("name") for p in c.get("extra_processes") or []]
-        if any(not n for n in names) or len(set(names)) != len(names):
-            errors.append(f"{c['block']}: extra processes need unique names")
+    for c in enabled:
+        if c["input_type"] not in odr.INPUT_TYPES:
+            errors.append(f"{c['block']}: unknown input type '{c['input_type']}'")
+            continue
+        if not c["source"]:
+            errors.append(f"{c['block']}: no input feed set")
+        elif c["input_type"] != "eti_file" and not c["source"].startswith(("tcp://", "udp://")):
+            errors.append(f"{c['block']}: feed should look like tcp://host:port or udp://:port")
+        if odr.runs_modulator(c):
+            ports.append(c["iq_port"])
     if len(set(ports)) != len(ports):
-        errors.append("Port numbers clash between channels")
+        errors.append("IQ port numbers clash between channels")
     g = cfg["hackrf"]["tx_gain"]
     if not isinstance(g, (int, float)) or not 0 <= g <= 47:
         errors.append("TX gain must be between 0 and 47 dB")
@@ -142,8 +136,8 @@ def load(path=None):
         cfg = {}
     normalize(cfg)
     if not cfg["channels"]:
-        for b in ("12A", "12C", "12D"):
-            new_channel(cfg, b)
+        for i, b in enumerate(("12A", "12C", "12D")):
+            new_channel(cfg, b)["source"] = f"tcp://localhost:{9100 + i}"
     return cfg
 
 
